@@ -1,0 +1,35 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual env
+.venv/
+venv/
+ENV/
+
+# Secrets
+.env
+.env.*
+
+# IDE
+.windsurf/
+.vscode/
+.idea/
+
+# Runtime / experiment outputs
+alpha_agent/output/
+alpha_agent/mlruns/
+alpha_agent/feature_repo/data/registry.db
+alpha_agent/Volumes/
+
+kaggle/**/analysis_output/
+kaggle/**/data/
+
+# Logs
+*.log

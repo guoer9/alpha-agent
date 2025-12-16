@@ -1,0 +1,108 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.spyderproject
+.spyproject
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Testing
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Output & Cache
+output/
+data/cache/
+mlruns/
+*.log
+logs/
+
+# Model files
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Data files (large)
+*.csv
+*.parquet
+*.feather
+!requirements.txt
+
+# Qlib data
+~/.qlib/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+.env.*.local
+secrets/
+*.key
+*.pem
+
+# Docker volumes
+docker/data/
+docker/volumes/
+
+# Milvus data
+docker/milvus/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Generated documentation
+docs/_build/
+
+# Local development
+local/
+scratch/
+tmp/
+
+# Volumes symlink (development only)
+Volumes/
