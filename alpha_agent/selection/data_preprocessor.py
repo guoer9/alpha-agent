@@ -119,6 +119,17 @@ def add_derived_fields(df: pd.DataFrame, inplace: bool = True) -> pd.DataFrame:
             df['adv5'] = df['volume'].rolling(5).mean()
             df['adv10'] = df['volume'].rolling(10).mean()
             df['adv20'] = df['volume'].rolling(20).mean()
+
+    # 基本面字段兜底：避免 Milvus 因子因字段缺失直接 KeyError
+    try:
+        from .factor_cleaner import FUNDAMENTAL_FIELDS
+
+        missing_fields = [f for f in FUNDAMENTAL_FIELDS if f not in df.columns]
+        for field_name in missing_fields:
+            df[field_name] = np.nan
+    except Exception:
+        # 避免因为可选依赖或导入失败影响主流程
+        pass
     
     return df
 

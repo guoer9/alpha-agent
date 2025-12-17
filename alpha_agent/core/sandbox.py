@@ -166,14 +166,21 @@ class Sandbox:
                 
                 # 处理numpy scalar (单个值)
                 if np.isscalar(factor) or (hasattr(factor, 'ndim') and factor.ndim == 0):
-                    return None, None  # 静默跳过，不是错误
+                    # 标量输出：广播为常数因子（与 df.index 对齐），避免静默丢弃
+                    try:
+                        return pd.Series(factor, index=df.index), None
+                    except Exception:
+                        return None, None
                 
                 if not isinstance(factor, (pd.Series, np.ndarray)):
                     return None, None  # 静默跳过
                 
                 if isinstance(factor, np.ndarray):
                     if factor.ndim == 0:  # 0维数组（标量）
-                        return None, None
+                        try:
+                            return pd.Series(factor.item(), index=df.index), None
+                        except Exception:
+                            return None, None
                     factor = pd.Series(factor, index=df.index)
                 
                 return factor, None

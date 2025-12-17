@@ -23,6 +23,7 @@ ENV/
 .idea/
 
 # Runtime / experiment outputs
+output/
 alpha_agent/output/
 alpha_agent/mlruns/
 alpha_agent/feature_repo/data/registry.db
@@ -33,3 +34,6 @@ kaggle/**/data/
 
 # Logs
 *.log
+
+# Egg info
+*.egg-info/

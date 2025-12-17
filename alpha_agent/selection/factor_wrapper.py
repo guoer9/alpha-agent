@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import hashlib
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Callable, Union, Any
 from dataclasses import dataclass, field, asdict
@@ -90,6 +91,20 @@ class FactorWrapper:
         self.factors: List[FactorMeta] = factors or []
         self._executor: Optional[Callable] = None
         self._cache: Dict[str, pd.Series] = {}
+
+        self._last_compute_errors: List[Dict[str, Any]] = []
+        self._last_compute_warnings: List[Dict[str, Any]] = []
+        self._last_compute_lock = threading.Lock()
+
+        self._last_factor_id_map: Dict[str, Dict[str, str]] = {}
+
+    def _get_factor_key(self, factor: FactorMeta) -> str:
+        """稳定因子主键：优先 factor.id，否则用 code_hash"""
+        if getattr(factor, 'id', None):
+            return str(factor.id)
+        code = (getattr(factor, 'code', '') or '').strip()
+        code_norm = " ".join(code.split())
+        return hashlib.md5(code_norm.encode('utf-8')).hexdigest()
     
     # ============================================================
     # 创建方法
@@ -155,6 +170,32 @@ class FactorWrapper:
             # 使用自定义执行器
             if self._executor:
                 values = self._executor(factor.code, data)
+                if values is None:
+                    error_text = None
+                    if hasattr(self._executor, 'get_last_error'):
+                        try:
+                            error_text = self._executor.get_last_error(clear=True)
+                        except Exception:
+                            error_text = None
+                    if error_text:
+                        error_type = 'SandboxError'
+                        error_message = error_text
+                    else:
+                        error_type = 'NoneResult'
+                        error_message = 'executor returned None without error (factor may return None/empty)'
+
+                    err = {
+                        'factor_key': self._get_factor_key(factor),
+                        'factor_id': factor.id,
+                        'factor_name': factor.name,
+                        'error_type': error_type,
+                        'error_message': str(error_message)[:500],
+                        'code_snippet': (factor.code or '')[:500],
+                    }
+                    with self._last_compute_lock:
+                        self._last_compute_errors.append(err)
+                    return None
+
                 if isinstance(values, pd.Series):
                     return values
                 return pd.Series(values, index=data.index)
@@ -163,8 +204,61 @@ class FactorWrapper:
             return self._execute_factor_code(factor.code, data)
             
         except Exception as e:
+            err = {
+                'factor_key': self._get_factor_key(factor),
+                'factor_id': factor.id,
+                'factor_name': factor.name,
+                'error_type': type(e).__name__,
+                'error_message': str(e)[:500],
+                'code_snippet': (factor.code or '')[:500],
+            }
+            with self._last_compute_lock:
+                self._last_compute_errors.append(err)
             logger.warning(f"计算因子 {factor.name} 失败: {e}")
             return None
+
+    def get_last_compute_report(self, top_n: int = 10) -> Dict[str, Any]:
+        """获取最近一次 compute 的失败统计与样本"""
+        with self._last_compute_lock:
+            errors = list(self._last_compute_errors)
+            warnings = list(self._last_compute_warnings)
+
+        buckets: Dict[str, Dict[str, Any]] = {}
+        for e in errors:
+            key = f"{e.get('error_type', 'Unknown')}: {e.get('error_message', '')}"
+            if key not in buckets:
+                buckets[key] = {
+                    'count': 0,
+                    'samples': [],
+                }
+            buckets[key]['count'] += 1
+            if len(buckets[key]['samples']) < 3:
+                buckets[key]['samples'].append(
+                    {
+                        'factor_id': e.get('factor_id', ''),
+                        'factor_name': e.get('factor_name', ''),
+                        'code_snippet': e.get('code_snippet', ''),
+                    }
+                )
+
+        top = sorted(buckets.items(), key=lambda kv: kv[1]['count'], reverse=True)
+        top = top[: max(0, int(top_n))]
+
+        return {
+            'total_failures': len(errors),
+            'total_warnings': len(warnings),
+            'top_reasons': [
+                {
+                    'reason': reason,
+                    'count': info['count'],
+                    'samples': info['samples'],
+                }
+                for reason, info in top
+            ],
+            'raw_errors': errors,
+            'warnings': warnings,
+            'factor_id_map': dict(self._last_factor_id_map),
+        }
     
     def compute(
         self,
@@ -188,6 +282,36 @@ class FactorWrapper:
         
         # 数据哈希用于缓存
         data_hash = hashlib.md5(str(data.shape).encode()).hexdigest()[:8]
+
+        with self._last_compute_lock:
+            self._last_compute_errors = []
+            self._last_compute_warnings = []
+            self._last_factor_id_map = {}
+
+        # 收集 id->name 映射，并记录重名 warning（不影响计算/结果）
+        name_to_keys: Dict[str, List[str]] = {}
+        for f in self.factors:
+            key = self._get_factor_key(f)
+            with self._last_compute_lock:
+                self._last_factor_id_map[key] = {
+                    'id': str(getattr(f, 'id', '')),
+                    'name': str(getattr(f, 'name', '')),
+                }
+            n = str(getattr(f, 'name', '') or '')
+            if n:
+                name_to_keys.setdefault(n, []).append(key)
+
+        for n, keys in name_to_keys.items():
+            if len(keys) > 1:
+                warn = {
+                    'warning_type': 'DuplicateName',
+                    'factor_name': n,
+                    'count': int(len(keys)),
+                    'factor_keys': keys[:20],
+                    'message': f"duplicate factor name detected: {n} (count={len(keys)})",
+                }
+                with self._last_compute_lock:
+                    self._last_compute_warnings.append(warn)
         
         results = {}
         
@@ -197,9 +321,10 @@ class FactorWrapper:
             
             for factor in self.factors:
                 # 检查缓存
-                cache_key = f"{factor.id}_{data_hash}"
+                factor_key = self._get_factor_key(factor)
+                cache_key = f"{factor_key}_{data_hash}"
                 if use_cache and cache_key in self._cache:
-                    results[factor.name] = self._cache[cache_key]
+                    results[factor_key] = self._cache[cache_key]
                     continue
                 
                 future = pool.submit(self.compute_single, factor, data)
@@ -210,13 +335,25 @@ class FactorWrapper:
                 try:
                     values = future.result(timeout=60)
                     if values is not None:
-                        results[factor.name] = values
+                        factor_key = self._get_factor_key(factor)
+                        results[factor_key] = values
                         # 缓存
                         if use_cache:
-                            cache_key = f"{factor.id}_{data_hash}"
+                            cache_key = f"{factor_key}_{data_hash}"
                             self._cache[cache_key] = values
                 except Exception as e:
-                    logger.warning(f"因子 {factor.name} 计算超时或失败")
+                    factor_key = self._get_factor_key(factor)
+                    err = {
+                        'factor_key': factor_key,
+                        'factor_id': getattr(factor, 'id', ''),
+                        'factor_name': getattr(factor, 'name', ''),
+                        'error_type': type(e).__name__,
+                        'error_message': str(e)[:500],
+                        'code_snippet': (factor.code or '')[:500],
+                    }
+                    with self._last_compute_lock:
+                        self._last_compute_errors.append(err)
+                    logger.warning(f"因子 {getattr(factor, 'name', '')}({factor_key}) 计算超时或失败: {e}")
         
         factor_df = pd.DataFrame(results, index=data.index)
         logger.info(f"计算完成: {len(results)}/{len(self.factors)} 个因子")

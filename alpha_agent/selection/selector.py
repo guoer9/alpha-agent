@@ -92,33 +92,73 @@ class FactorSelector:
         # 快速筛选
         quick_sample_ratio: float = None,
         quick_ic_threshold: float = None,
+        random_seed: int = None,
         # 去重
+        enable_dedup: bool = None,
         dedup_threshold: float = None,
         # 聚类
         enable_cluster: bool = None,
         n_clusters: int = None,
         reps_per_cluster: int = None,
+        cluster_method: str = None,
+        cluster_sample_ratio: float = None,
+        cluster_sample_size: int = None,
+        cluster_corr_threshold: float = None,
         # 正交化
+        enable_orthogonal: bool = None,
         max_factors: int = None,
         corr_threshold: float = None,
         min_marginal_ic: float = None,
         # 完整评估
+        enable_full_eval: bool = None,
         full_ic_threshold: float = None,
         full_icir_threshold: float = None,
+        full_eval_parallel: bool = None,
+        full_eval_n_workers: int = None,
     ):
         # 使用配置文件默认值
         cfg = selection_config
         self.quick_sample_ratio = quick_sample_ratio if quick_sample_ratio is not None else cfg.quick_sample_ratio
         self.quick_ic_threshold = quick_ic_threshold if quick_ic_threshold is not None else cfg.quick_ic_threshold
+        self.random_seed = random_seed if random_seed is not None else getattr(cfg, 'random_seed', 42)
+        self.enable_dedup = enable_dedup if enable_dedup is not None else cfg.enable_dedup
         self.dedup_threshold = dedup_threshold if dedup_threshold is not None else cfg.dedup_threshold
         self.enable_cluster = enable_cluster if enable_cluster is not None else cfg.enable_cluster
         self.n_clusters = n_clusters if n_clusters is not None else cfg.n_clusters
         self.reps_per_cluster = reps_per_cluster if reps_per_cluster is not None else cfg.reps_per_cluster
+        self.cluster_method = cluster_method if cluster_method is not None else getattr(cfg, 'cluster_method', 'kmeans')
+        self.cluster_sample_ratio = (
+            cluster_sample_ratio
+            if cluster_sample_ratio is not None
+            else getattr(cfg, 'cluster_sample_ratio', 1.0)
+        )
+        self.cluster_sample_size = (
+            cluster_sample_size
+            if cluster_sample_size is not None
+            else getattr(cfg, 'cluster_sample_size', 0)
+        )
+        self.cluster_corr_threshold = (
+            cluster_corr_threshold
+            if cluster_corr_threshold is not None
+            else getattr(cfg, 'cluster_corr_threshold', 0.8)
+        )
+        self.enable_orthogonal = enable_orthogonal if enable_orthogonal is not None else cfg.enable_orthogonal
         self.max_factors = max_factors if max_factors is not None else cfg.max_factors
         self.corr_threshold = corr_threshold if corr_threshold is not None else cfg.corr_threshold
         self.min_marginal_ic = min_marginal_ic if min_marginal_ic is not None else cfg.min_marginal_ic
+        self.enable_full_eval = enable_full_eval if enable_full_eval is not None else cfg.enable_full_eval
         self.full_ic_threshold = full_ic_threshold if full_ic_threshold is not None else cfg.full_ic_threshold
         self.full_icir_threshold = full_icir_threshold if full_icir_threshold is not None else cfg.full_icir_threshold
+        self.full_eval_parallel = (
+            full_eval_parallel
+            if full_eval_parallel is not None
+            else getattr(cfg, 'full_eval_parallel', False)
+        )
+        self.full_eval_n_workers = (
+            full_eval_n_workers
+            if full_eval_n_workers is not None
+            else getattr(cfg, 'full_eval_n_workers', 4)
+        )
         
         # Milvus连接 (可选)
         self._milvus_store = None
@@ -156,10 +196,29 @@ class FactorSelector:
             return result
         
         logger.info(f"开始因子筛选: {len(factors)} 个候选因子")
+        logger.info(
+            "Selector配置: "
+            f"enable_dedup={self.enable_dedup}, "
+            f"enable_cluster={self.enable_cluster}, "
+            f"enable_full_eval={self.enable_full_eval}, "
+            f"enable_orthogonal={self.enable_orthogonal}, "
+            f"quick_sample_ratio={self.quick_sample_ratio}, "
+            f"quick_ic_threshold={self.quick_ic_threshold}, "
+            f"random_seed={self.random_seed}, "
+            f"dedup_threshold={self.dedup_threshold}, "
+            f"n_clusters={self.n_clusters}, reps_per_cluster={self.reps_per_cluster}, "
+            f"cluster_method={self.cluster_method}, "
+            f"max_factors={self.max_factors}, corr_threshold={self.corr_threshold}, "
+            f"min_marginal_ic={self.min_marginal_ic}, "
+            f"full_ic_threshold={self.full_ic_threshold}, full_icir_threshold={self.full_icir_threshold}, "
+            f"full_eval_parallel={self.full_eval_parallel}, full_eval_n_workers={self.full_eval_n_workers}"
+        )
+
+        values_cache: Dict[Tuple[str, str], pd.Series] = {}
         
         # Stage 1: 快速预筛选
         logger.info("Stage 1: 快速预筛选...")
-        candidates = self._quick_filter(factors, data, target, sandbox_executor)
+        candidates = self._quick_filter(factors, data, target, sandbox_executor, values_cache)
         result.after_quick_filter = len(candidates)
         logger.info(f"  快速筛选: {len(factors)} → {len(candidates)}")
         
@@ -170,29 +229,66 @@ class FactorSelector:
         
         # Stage 2: 语义去重
         logger.info("Stage 2: 语义去重...")
-        candidates = self._semantic_dedup(candidates)
+        if self.enable_dedup:
+            candidates = self._semantic_dedup(candidates)
+        else:
+            logger.info("  跳过去重")
         result.after_dedup = len(candidates)
         logger.info(f"  语义去重: {result.after_quick_filter} → {len(candidates)}")
         
         # Stage 3: 聚类代表选择 (可选)
         if self.enable_cluster and len(candidates) > self.n_clusters * self.reps_per_cluster:
             logger.info("Stage 3: 聚类代表选择...")
-            candidates = self._cluster_select(candidates, data, target, sandbox_executor)
+            candidates = self._cluster_select(candidates, data, target, sandbox_executor, values_cache)
             result.after_cluster = len(candidates)
             logger.info(f"  聚类选择: {result.after_dedup} → {len(candidates)}")
         else:
+            if not self.enable_cluster:
+                logger.info("Stage 3: 聚类代表选择... 跳过(未启用)")
+            else:
+                logger.info(
+                    "Stage 3: 聚类代表选择... 跳过(候选因子数不足) "
+                    f"candidates={len(candidates)}, need>{self.n_clusters * self.reps_per_cluster}"
+                )
             result.after_cluster = len(candidates)
         
         # Stage 4: 完整评估
         logger.info("Stage 4: 完整评估...")
-        candidates = self._full_evaluate(candidates, data, target, sandbox_executor)
-        logger.info(f"  完整评估后: {len(candidates)} 个有效因子")
+        candidates_before_full_eval = list(candidates)
+        if self.enable_full_eval:
+            candidates = self._full_evaluate(
+                candidates,
+                data,
+                target,
+                sandbox_executor,
+                use_parallel=self.full_eval_parallel,
+                n_workers=self.full_eval_n_workers,
+                values_cache=values_cache,
+            )
+            logger.info(f"  完整评估后: {len(candidates)} 个有效因子")
+            if len(candidates) == 0 and len(candidates_before_full_eval) > 0:
+                logger.warning(
+                    "  完整评估后无因子通过阈值，回退到完整评估前候选(按 quick_ic 排序截断)"
+                )
+                candidates_before_full_eval = sorted(
+                    candidates_before_full_eval,
+                    key=lambda x: abs(x.get('quick_ic', 0)),
+                    reverse=True,
+                )
+                candidates = candidates_before_full_eval[: self.max_factors]
+        else:
+            logger.info("  跳过完整评估")
         
         # Stage 5: 正交化组合优化
         logger.info("Stage 5: 正交化组合优化...")
-        selected, corr_matrix = self._orthogonal_select(
-            candidates, data, target, sandbox_executor
-        )
+        if self.enable_orthogonal:
+            selected, corr_matrix = self._orthogonal_select(
+                candidates, data, target, sandbox_executor
+            )
+        else:
+            logger.info("  跳过正交化，直接截断到 max_factors")
+            selected = candidates[: self.max_factors]
+            corr_matrix = pd.DataFrame()
         result.final_count = len(selected)
         result.selected_factors = selected
         result.correlation_matrix = corr_matrix
@@ -225,6 +321,7 @@ class FactorSelector:
         data: pd.DataFrame,
         target: pd.Series,
         executor: Callable,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
     ) -> List[Dict]:
         """
         快速预筛选 - 采样计算IC
@@ -235,7 +332,8 @@ class FactorSelector:
         # 采样数据
         sample_size = max(1000, int(len(data) * self.quick_sample_ratio))
         if len(data) > sample_size:
-            sample_idx = np.random.choice(len(data), sample_size, replace=False)
+            rs = np.random.RandomState(self.random_seed)
+            sample_idx = rs.choice(len(data), sample_size, replace=False)
             data_sample = data.iloc[sample_idx]
             target_sample = target.iloc[sample_idx]
         else:
@@ -247,10 +345,13 @@ class FactorSelector:
         for factor in factors:
             try:
                 # 执行因子代码
-                if executor:
-                    factor_values = executor(factor.get('code', ''), data_sample)
-                else:
-                    factor_values = self._execute_factor(factor.get('code', ''), data_sample)
+                factor_values = self._get_factor_values(
+                    factor,
+                    data_sample,
+                    executor,
+                    values_cache,
+                    cache_tag='quick',
+                )
                 
                 if factor_values is None or len(factor_values) == 0:
                     continue
@@ -365,6 +466,7 @@ class FactorSelector:
         data: pd.DataFrame,
         target: pd.Series,
         executor: Callable,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
     ) -> List[Dict]:
         """
         聚类代表选择
@@ -373,17 +475,31 @@ class FactorSelector:
         """
         if len(factors) <= self.n_clusters:
             return factors
+
+        method = (self.cluster_method or 'kmeans').strip().lower()
+        if method == 'corr_greedy':
+            return self._cluster_select_corr_greedy(
+                factors,
+                data,
+                executor,
+                values_cache,
+            )
         
+        cluster_data = self._get_cluster_data(data)
+
         # 计算因子值矩阵
         factor_matrix = []
         valid_factors = []
         
         for factor in factors:
             try:
-                if executor:
-                    values = executor(factor.get('code', ''), data)
-                else:
-                    values = self._execute_factor(factor.get('code', ''), data)
+                values = self._get_factor_values(
+                    factor,
+                    cluster_data,
+                    executor,
+                    values_cache,
+                    cache_tag='cluster',
+                )
                 
                 if values is not None and len(values) > 0:
                     # 标准化
@@ -427,6 +543,120 @@ class FactorSelector:
                 selected.append(f)
         
         return selected
+
+    def _cluster_select_corr_greedy(
+        self,
+        factors: List[Dict],
+        data: pd.DataFrame,
+        executor: Callable,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
+    ) -> List[Dict]:
+        if len(factors) <= 1:
+            return factors
+
+        cluster_data = self._get_cluster_data(data)
+        target_count = max(1, int(self.n_clusters * self.reps_per_cluster))
+        factors_sorted = sorted(
+            factors,
+            key=lambda x: abs(x.get('quick_ic', 0)),
+            reverse=True,
+        )
+
+        selected: List[Dict] = []
+        selected_values: Dict[str, pd.Series] = {}
+
+        for factor in factors_sorted:
+            if len(selected) >= target_count:
+                break
+
+            values = self._get_factor_values(
+                factor,
+                cluster_data,
+                executor,
+                values_cache,
+                cache_tag='cluster',
+            )
+            if values is None or len(values) == 0:
+                continue
+
+            max_corr = 0.0
+            for existing_values in selected_values.values():
+                try:
+                    aligned = pd.concat([values, existing_values], axis=1).dropna()
+                    if len(aligned) < 20:
+                        continue
+                    corr = aligned.iloc[:, 0].corr(aligned.iloc[:, 1], method='spearman')
+                    corr = abs(corr) if not np.isnan(corr) else 0.0
+                    if corr > max_corr:
+                        max_corr = corr
+                        if max_corr > self.cluster_corr_threshold:
+                            break
+                except Exception:
+                    continue
+
+            if max_corr > self.cluster_corr_threshold:
+                continue
+
+            key = self._factor_key(factor)
+            selected.append(factor)
+            selected_values[key] = values
+
+        return selected
+
+    def _get_cluster_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        if self.cluster_sample_size and self.cluster_sample_size > 0:
+            sample_size = int(self.cluster_sample_size)
+        else:
+            ratio = float(self.cluster_sample_ratio) if self.cluster_sample_ratio is not None else 1.0
+            if ratio >= 1.0:
+                return data
+            sample_size = int(len(data) * ratio)
+
+        sample_size = max(1000, min(len(data), sample_size))
+        if len(data) <= sample_size:
+            return data
+
+        rs = np.random.RandomState(self.random_seed)
+        sample_idx = rs.choice(len(data), sample_size, replace=False)
+        return data.iloc[sample_idx]
+
+    def _factor_key(self, factor: Dict) -> str:
+        fid = factor.get('id')
+        if fid is not None and str(fid) != '':
+            return str(fid)
+        code = (factor.get('code', '') or '').strip()
+        code_norm = " ".join(code.split())
+        return hashlib.md5(code_norm.encode('utf-8')).hexdigest()
+
+    def _get_factor_values(
+        self,
+        factor: Dict,
+        data: pd.DataFrame,
+        executor: Callable,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]],
+        cache_tag: str,
+    ) -> Optional[pd.Series]:
+        if values_cache is None:
+            if executor:
+                return executor(factor.get('code', ''), data)
+            return self._execute_factor(factor.get('code', ''), data)
+
+        key = self._factor_key(factor)
+        cache_key = (key, cache_tag)
+        if cache_key in values_cache:
+            return values_cache.get(cache_key)
+
+        try:
+            if executor:
+                values = executor(factor.get('code', ''), data)
+            else:
+                values = self._execute_factor(factor.get('code', ''), data)
+        except Exception:
+            values_cache[cache_key] = None
+            return None
+
+        values_cache[cache_key] = values
+        return values
     
     # ============================================================
     # Stage 4: 完整评估
@@ -440,6 +670,7 @@ class FactorSelector:
         executor: Callable,
         use_parallel: bool = False,  # 默认禁用并行，避免多线程问题
         n_workers: int = 4,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
     ) -> List[Dict]:
         """
         完整评估 - 支持并行
@@ -460,12 +691,25 @@ class FactorSelector:
         # 尝试并行评估
         if use_parallel and len(factors) >= 5:
             try:
-                return self._parallel_evaluate(factors, data, target, executor, n_workers)
+                return self._parallel_evaluate(
+                    factors,
+                    data,
+                    target,
+                    executor,
+                    n_workers,
+                    values_cache=values_cache,
+                )
             except Exception as e:
                 logger.warning(f"并行评估失败，回退到串行: {e}")
         
         # 串行评估
-        return self._sequential_evaluate(factors, data, target, executor)
+        return self._sequential_evaluate(
+            factors,
+            data,
+            target,
+            executor,
+            values_cache=values_cache,
+        )
     
     def _parallel_evaluate(
         self,
@@ -474,6 +718,7 @@ class FactorSelector:
         target: pd.Series,
         executor: Callable,
         n_workers: int = 4,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
     ) -> List[Dict]:
         """并行评估 - 使用ThreadPool或Celery"""
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -494,6 +739,7 @@ class FactorSelector:
                     data,
                     target,
                     executor,
+                    values_cache,
                 )
                 futures[future] = factor.get('name', factor.get('id', ''))
             
@@ -529,6 +775,7 @@ class FactorSelector:
         data: pd.DataFrame,
         target: pd.Series,
         executor: Callable,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
     ) -> Tuple[Optional[Dict], str]:
         """评估单个因子并返回失败原因"""
         name = factor.get('name', factor.get('id', 'unknown'))
@@ -536,10 +783,13 @@ class FactorSelector:
         
         try:
             # 执行因子
-            if executor:
-                values = executor(code, data)
-            else:
-                values = self._execute_factor(code, data)
+            values = self._get_factor_values(
+                factor,
+                data,
+                executor,
+                values_cache,
+                cache_tag='full',
+            )
             
             if values is None or len(values) == 0:
                 # 打印前3个失败因子的详细信息
@@ -587,16 +837,20 @@ class FactorSelector:
         target: pd.Series,
         executor: Callable,
         debug: bool = False,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
     ) -> Optional[Dict]:
         """评估单个因子"""
         name = factor.get('name', factor.get('id', 'unknown'))
         
         try:
             # 执行因子
-            if executor:
-                values = executor(factor.get('code', ''), data)
-            else:
-                values = self._execute_factor(factor.get('code', ''), data)
+            values = self._get_factor_values(
+                factor,
+                data,
+                executor,
+                values_cache,
+                cache_tag='full',
+            )
             
             if values is None or len(values) == 0:
                 if debug:
@@ -646,6 +900,7 @@ class FactorSelector:
         data: pd.DataFrame,
         target: pd.Series,
         executor: Callable,
+        values_cache: Optional[Dict[Tuple[str, str], pd.Series]] = None,
     ) -> List[Dict]:
         """串行评估"""
         evaluated = []
@@ -654,7 +909,13 @@ class FactorSelector:
             if (i + 1) % 10 == 0:
                 logger.info(f"  进度: {i+1}/{len(factors)}")
             
-            result = self._evaluate_single(factor, data, target, executor)
+            result = self._evaluate_single(
+                factor,
+                data,
+                target,
+                executor,
+                values_cache=values_cache,
+            )
             if result:
                 evaluated.append(result)
         
@@ -676,11 +937,9 @@ class FactorSelector:
         factor_vals = aligned.iloc[:, 0]
         target_vals = aligned.iloc[:, 1]
         
-        # 整体IC (Spearman)
+        # Rank IC (Spearman)
         ic = factor_vals.corr(target_vals, method='spearman')
-        
-        # Rank IC
-        rank_ic = factor_vals.rank().corr(target_vals.rank())
+        rank_ic = ic
         
         # 滚动IC计算ICIR - 向量化版本
         # 按日期分组计算每日截面IC
@@ -714,7 +973,9 @@ class FactorSelector:
                 icir = ic / 0.1 if abs(ic) > 0.01 else 0
         else:
             # 简单Index - 使用rolling
-            rolling_corr = factor_vals.rolling(20).corr(target_vals)
+            factor_rank = factor_vals.rank()
+            target_rank = target_vals.rank()
+            rolling_corr = factor_rank.rolling(20).corr(target_rank)
             rolling_corr = rolling_corr.dropna()
             if len(rolling_corr) > 0:
                 icir = rolling_corr.mean() / (rolling_corr.std() + 1e-8)
@@ -725,7 +986,7 @@ class FactorSelector:
             'ic': ic if not np.isnan(ic) else 0,
             'icir': icir if not np.isnan(icir) else 0,
             'rank_ic': rank_ic if not np.isnan(rank_ic) else 0,
-            'rank_icir': icir,  # 简化
+            'rank_icir': icir,
         }
     
     # ============================================================
@@ -753,7 +1014,11 @@ class FactorSelector:
             return [], pd.DataFrame()
         
         # 按IC排序
-        factors = sorted(factors, key=lambda x: abs(x.get('ic', 0)), reverse=True)
+        factors = sorted(
+            factors,
+            key=lambda x: abs(x.get('ic', x.get('quick_ic', 0))),
+            reverse=True,
+        )
         
         selected = []
         selected_names = []
@@ -767,7 +1032,17 @@ class FactorSelector:
             values = factor.get('values')
             
             if values is None:
-                continue
+                try:
+                    code = factor.get('code', '')
+                    if executor:
+                        values = executor(code, data)
+                    else:
+                        values = self._execute_factor(code, data)
+                    if values is None or len(values) == 0:
+                        continue
+                    factor['values'] = values
+                except Exception:
+                    continue
             
             # 检查相关性约束
             if len(selected) > 0:

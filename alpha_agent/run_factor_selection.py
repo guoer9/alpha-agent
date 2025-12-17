@@ -165,6 +165,9 @@ class PipelineConfig:
     # 对比模式配置
     compare_sets: List[str] = field(default_factory=lambda: ["alpha158", "worldquant101", "gtja191"])
     max_factors_per_set: int = 50
+
+    # compare 模式：milvus-selected 的 selector 透传参数（JSON字符串解析后）
+    milvus_selected_selector_kwargs: Optional[Dict] = None
     
     def validate(self) -> List[str]:
         """验证配置，返回错误列表"""
@@ -191,6 +194,16 @@ class PipelineConfig:
         library_sets = [s.strip() for s in args.library_sets.split(',')] if hasattr(args, 'library_sets') else ["alpha158"]
         compare_sets = [s.strip() for s in args.compare_sets.split(',')] if hasattr(args, 'compare_sets') else ["alpha158", "worldquant101", "gtja191"]
         max_factors_per_set = getattr(args, 'max_factors_per_set', 50)
+
+        milvus_selected_selector_kwargs = None
+        milvus_selected_selector_kwargs_raw = getattr(args, 'milvus_selected_selector_kwargs', None)
+        if milvus_selected_selector_kwargs_raw:
+            try:
+                milvus_selected_selector_kwargs = json.loads(milvus_selected_selector_kwargs_raw)
+            except Exception as e:
+                raise ValueError(
+                    f"--milvus-selected-selector-kwargs 不是合法JSON: {e}"
+                )
         
         return cls(
             mode=PipelineMode(args.mode),
@@ -210,6 +223,7 @@ class PipelineConfig:
             output_dir=args.output,
             compare_sets=compare_sets,
             max_factors_per_set=max_factors_per_set,
+            milvus_selected_selector_kwargs=milvus_selected_selector_kwargs,
         )
 
 # 设置项目路径
@@ -542,24 +556,36 @@ def load_factors_from_library(
 def create_sandbox_executor(data: pd.DataFrame):
     """创建沙箱执行器 - 使用现有Sandbox"""
     from alpha_agent.core.sandbox import execute_code
-    
-    _error_count = [0]
-    
-    def executor(code: str, df: pd.DataFrame = None) -> Optional[pd.Series]:
-        if df is None:
-            df = data
-        
-        result, error = execute_code(code, df, timeout_seconds=30)
-        if error:
-            _error_count[0] += 1
-            if _error_count[0] <= 3:
-                # 只打印简短错误
-                short_error = error.split('\n')[0] if '\n' in error else error
-                logger.warning(f"执行失败: {short_error}")
-            return None
-        return result
-    
-    return executor
+
+    class SandboxExecutor:
+        def __init__(self, default_df: pd.DataFrame):
+            self._default_df = default_df
+            self._error_count = 0
+            self._tls = __import__('threading').local()
+
+        def __call__(self, code: str, df: pd.DataFrame = None) -> Optional[pd.Series]:
+            if df is None:
+                df = self._default_df
+
+            result, error = execute_code(code, df, timeout_seconds=30)
+            if error:
+                self._error_count += 1
+                self._tls.last_error = error
+                if self._error_count <= 3:
+                    short_error = error.split('\n')[0] if '\n' in error else error
+                    logger.warning(f"执行失败: {short_error}")
+                return None
+
+            self._tls.last_error = None
+            return result
+
+        def get_last_error(self, clear: bool = True) -> Optional[str]:
+            err = getattr(self._tls, 'last_error', None)
+            if clear:
+                self._tls.last_error = None
+            return err
+
+    return SandboxExecutor(data)
 
 
 # ============================================================
@@ -589,6 +615,9 @@ class BacktestResult:
     model_type: str = ""
     train_period: str = ""
     test_period: str = ""
+
+    # 因子计算失败报告（可选）
+    compute_report: Optional[Dict] = None
     
     def to_dict(self) -> Dict:
         """转为字典，确保JSON可序列化"""
@@ -722,6 +751,22 @@ def run_backtest(
     logger.info("\n📊 Step 1: 计算因子值")
     factor_df = wrapper.compute(data, n_workers=4)
     logger.info(f"计算完成: {factor_df.shape[1]} 个因子")
+
+    compute_report = None
+    if hasattr(wrapper, 'get_last_compute_report'):
+        try:
+            compute_report = wrapper.get_last_compute_report(top_n=10)
+            if compute_report:
+                failures = int(compute_report.get('total_failures', 0) or 0)
+                warnings = int(compute_report.get('total_warnings', 0) or 0)
+                if failures > 0 or warnings > 0:
+                    logger.info(
+                        f"因子计算统计: failures={failures}, warnings={warnings}，Top失败原因如下:"
+                    )
+                    for item in compute_report.get('top_reasons', [])[:10]:
+                        logger.info(f"  - {item.get('count')}x {item.get('reason')}")
+        except Exception as e:
+            logger.warning(f"生成因子失败报告失败: {e}")
     
     if factor_df.empty or factor_df.shape[1] == 0:
         logger.error("无有效因子值")
@@ -755,9 +800,13 @@ def run_backtest(
     
     # 5. 计算IC
     logger.info("\n📊 Step 5: 计算IC")
-    ic_series = _compute_daily_ic(pred_series, y_test)
-    ic_mean = ic_series.mean()
-    icir = ic_mean / (ic_series.std() + 1e-8)
+    ic_series = _compute_daily_ic(pred_series, y_test).dropna()
+    if ic_series.empty:
+        ic_mean = 0.0
+        icir = 0.0
+    else:
+        ic_mean = float(ic_series.mean())
+        icir = float(ic_mean / (ic_series.std() + 1e-8))
     logger.info(f"IC均值: {ic_mean:.4f}, ICIR: {icir:.2f}")
     
     # 6. 分组回测
@@ -774,11 +823,15 @@ def run_backtest(
     
     # 7. 计算组合收益
     logger.info("\n📊 Step 7: 计算组合收益")
-    portfolio_return, sharpe, max_dd = _compute_portfolio_metrics(pred_series, y_test)
-    
+    portfolio_return, sharpe, max_dd, portfolio_days = _compute_portfolio_metrics(pred_series, y_test)
+
     result = BacktestResult(
         total_return=portfolio_return,
-        annual_return=portfolio_return * 252 / len(ic_series) if len(ic_series) > 0 else 0,
+        annual_return=(
+            (1 + portfolio_return) ** (252 / portfolio_days) - 1
+            if portfolio_days > 0
+            else 0
+        ),
         sharpe_ratio=sharpe,
         max_drawdown=max_dd,
         ic_mean=ic_mean,
@@ -790,6 +843,7 @@ def run_backtest(
         model_type=model_type,
         train_period=f"{train_start} ~ {train_end}",
         test_period=f"{test_start} ~ {test_end}",
+        compute_report=compute_report,
     )
     
     logger.info(result.summary())
@@ -866,7 +920,7 @@ def _compute_portfolio_metrics(
     pred: pd.Series,
     actual: pd.Series,
     top_ratio: float = 0.2,
-) -> Tuple[float, float, float]:
+) -> Tuple[float, float, float, int]:
     """计算组合指标"""
     df = pd.concat([pred, actual], axis=1)
     df.columns = ['pred', 'actual']
@@ -893,7 +947,7 @@ def _compute_portfolio_metrics(
                 continue
     
     if not daily_returns:
-        return 0, 0, 0
+        return 0, 0, 0, 0
     
     returns = pd.Series(daily_returns)
     
@@ -909,7 +963,7 @@ def _compute_portfolio_metrics(
     drawdown = (cumulative - peak) / peak
     max_dd = abs(drawdown.min())
     
-    return total_return, sharpe, max_dd
+    return total_return, sharpe, max_dd, int(len(returns))
 
 
 # ============================================================
@@ -1560,10 +1614,13 @@ def _run_compare(config: PipelineConfig) -> Dict:
         test_start=config.test_start,
         test_end=config.test_end,
         output_dir=config.output_dir,
+        milvus_selected_selector_kwargs=config.milvus_selected_selector_kwargs,
     )
-    
-    if not results:
+
+    if results is None:
         return {"error": "因子集对比失败"}
+
+    logger.info(f"compare 模式返回结果数: {len(results)}")
     
     # 转换结果为字典格式
     return {
@@ -1706,6 +1763,8 @@ class ComparisonResult:
     top_group_return: float = 0.0
     long_short_return: float = 0.0
     elapsed: float = 0.0
+    compute_report: Optional[Dict] = None
+    factor_id_map: Optional[Dict] = None
     status: str = "success"
     error: str = ""
     
@@ -1732,6 +1791,7 @@ def compare_factor_sets(
     test_start: str = "2023-01-01",
     test_end: str = "2023-12-31",
     output_dir: str = "output/comparison",
+    milvus_selected_selector_kwargs: Optional[Dict] = None,
 ) -> Dict[str, ComparisonResult]:
     """
     对比不同因子集在同一模型上的回测效果
@@ -1838,7 +1898,16 @@ def compare_factor_sets(
                     # 清洗因子
                     milvus_factors = clean_factors(milvus_factors, list(data.columns))
                     # 使用FactorSelector筛选
-                    selector = FactorSelector(max_factors=max_factors_per_set or 30)
+                    selector_kwargs = dict(milvus_selected_selector_kwargs or {})
+                    selector_kwargs.setdefault('max_factors', max_factors_per_set or 30)
+                    try:
+                        logger.info(
+                            "milvus-selected selector_kwargs: "
+                            + json.dumps(selector_kwargs, ensure_ascii=False)[:500]
+                        )
+                    except Exception:
+                        logger.info(f"milvus-selected selector_kwargs: {selector_kwargs}")
+                    selector = FactorSelector(**selector_kwargs)
                     selection_result = selector.select(
                         factors=milvus_factors,
                         data=data,
@@ -1901,7 +1970,7 @@ def compare_factor_sets(
             
             elapsed = time.time() - start_time
             
-            results[set_name] = ComparisonResult(
+            result = ComparisonResult(
                 name=display_name,
                 factor_count=len(factors[:max_factors_per_set]),
                 ic_mean=backtest_result.ic_mean,
@@ -1912,8 +1981,16 @@ def compare_factor_sets(
                 top_group_return=backtest_result.top_group_return,
                 long_short_return=backtest_result.long_short_return,
                 elapsed=elapsed,
+                compute_report=backtest_result.compute_report,
+                factor_id_map=(
+                    (backtest_result.compute_report or {}).get('factor_id_map')
+                    if hasattr(backtest_result, 'compute_report')
+                    else None
+                ),
                 status="success",
             )
+
+            results[set_name] = result
             
             logger.info(f"✓ {display_name}: IC={backtest_result.ic_mean:.4f}, "
                        f"ICIR={backtest_result.icir:.2f}, "
@@ -2260,6 +2337,16 @@ def parse_args():
         type=int,
         default=50,
         help="对比模式中每个因子集的最大因子数 (默认: 50)"
+    )
+
+    parser.add_argument(
+        "--milvus-selected-selector-kwargs",
+        type=str,
+        default="",
+        help=(
+            "仅对 compare 模式生效：传给 milvus-selected 的 FactorSelector 参数（JSON字符串）。"
+            "例如: '{\"enable_dedup\": false, \"enable_full_eval\": false, \"enable_orthogonal\": false}'"
+        ),
     )
     
     # 筛选参数
