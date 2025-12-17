@@ -1,4 +1,4 @@
-# Alpha Agent - LLM驱动的智能量化因子系统
+# Money Agent - LLM驱动的智能量化因子系统
 
 > 基于LLM+GP混合进化的智能因子挖掘与筛选框架，集成Qlib多模型回测
 
