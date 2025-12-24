@@ -131,7 +131,6 @@ def generate_text(prompt: str, max_tokens: int, temperature: float):
         return generated_text
 
 @app.route('/v1/completions', methods=['POST'])
-@limiter.limit("10 per minute")
 def completions():
     """OpenAI兼容的completions接口（带速率限制和metrics）"""
     request_id = f"req-{int(time.time() * 1000)}-{hash(str(request.json))}"
@@ -191,7 +190,6 @@ def completions():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/v1/chat/completions', methods=['POST'])
-@limiter.limit("10 per minute")
 def chat_completions():
     """OpenAI兼容的chat completions接口（带速率限制和metrics）"""
     request_id = f"req-{int(time.time() * 1000)}-{hash(str(request.json))}"

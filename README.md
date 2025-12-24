@@ -103,7 +103,7 @@ qwen_vllm/
 ### 服务配置
 - **最大并发**: 3个请求
 - **队列大小**: 10个
-- **速率限制**: 10请求/分钟
+- **速率限制**: 无限制
 - **最大Token**: 512
 
 ### 性能指标
@@ -166,9 +166,35 @@ conda activate vllm-deploy
 | 显存不足 | 降低并发数，重启服务 |
 | 请求超时 | 检查GPU状态 |
 
-## Kubernetes部署
+## Kubernetes集群部署
 
-### 容器化部署
+### 集群架构
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                 K8s Cluster (Master: 10.9.3.131)           │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  ┌─────────────────────┐    ┌─────────────────────────┐   │
+│  │   qwen-vllm Pod     │    │  finbert-sentiment Pod  │   │
+│  │   ---------------   │    │  ---------------------  │   │
+│  │   模型: Qwen3-8B    │    │  模型: FinBERT          │   │
+│  │   功能: 新闻分类     │    │  功能: 情感分析         │   │
+│  │   端口: 8000        │    │  端口: 5000             │   │
+│  │   GPU: ~7GB        │    │  GPU: ~2GB              │   │
+│  └─────────────────────┘    └─────────────────────────┘   │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+### 当前服务
+
+| 服务 | 模型 | 功能 | 端口 | 状态 |
+|------|------|------|------|------|
+| qwen-vllm | Qwen3-8B | 新闻分类 | 8000 | ✅ Running |
+| finbert-sentiment | FinBERT | 情感分析 | 5000 | ✅ Running |
+
+### 快速部署
 
 ```bash
 # 构建镜像
@@ -177,19 +203,38 @@ docker build -t qwen-vllm:latest .
 # 部署到Kubernetes
 kubectl apply -k k8s/base
 
-# 查看状态
-kubectl get pods -l app=qwen-vllm
+# 查看所有服务状态
+kubectl get pods -o wide
+```
+
+### 集群管理
+
+```bash
+# 查看所有Pod
+kubectl get pods
+
+# 扩展副本
+kubectl scale deployment qwen-vllm --replicas=2
+
+# 查看集群状态
+bash scripts/k8s/cluster-status.sh
+
+# 新节点加入集群
+bash scripts/k8s/join-cluster.sh
 ```
 
 ### 核心特性
 
+- ✅ **多服务部署**: 支持多个AI模型服务共存
 - ✅ **自动扩缩容**: 基于请求队列和TTFT指标的HPA
 - ✅ **Prometheus集成**: 通过ServiceMonitor自动采集metrics
 - ✅ **健康检查**: Liveness和Readiness探针
 - ✅ **GPU调度**: 支持NVIDIA GPU资源管理
-- ✅ **滚动更新**: 零停机更新部署
+- ✅ **多节点扩展**: 支持Worker节点动态加入
 
-详细文档: [docs/KUBERNETES.md](docs/KUBERNETES.md)
+详细文档: 
+- [Kubernetes部署](docs/KUBERNETES.md)
+- [多节点集群部署](docs/CLUSTER_DEPLOYMENT.md)
 
 ## 技术栈
 
