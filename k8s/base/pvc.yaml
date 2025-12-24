@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen-model-pvc
+  labels:
+    app: qwen-vllm
+spec:
+  accessModes:
+  - ReadOnlyMany
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+  selector:
+    matchLabels:
+      app: qwen-vllm

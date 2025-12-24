@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: qwen-vllm
+  labels:
+    app: qwen-vllm
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: qwen-vllm
+  endpoints:
+  - port: http
+    path: /metrics/prometheus
+    interval: 15s
+    scrapeTimeout: 10s

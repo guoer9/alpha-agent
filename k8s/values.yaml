@@ -1,0 +1,60 @@
+# Qwen3-8B vLLM Helm配置
+# 参考: vllm-project/production-stack
+
+servingEngineSpec:
+  enableEngine: true
+  labels:
+    app: qwen-vllm
+    environment: production
+  
+  # 模型配置
+  modelSpec:
+  - name: qwen-news-classifier
+    repository: qwen-vllm
+    tag: latest
+    modelURL: "/models/qwen-news-classifier-merged"
+    
+    # 副本数（根据GPU服务器数量）
+    replicaCount: 3
+    
+    # 资源配置（每个Pod）
+    requestCPU: 4
+    requestMemory: "16Gi"
+    requestGPU: 1
+    limitCPU: "8"
+    limitMemory: "32Gi"
+    
+    # vLLM配置
+    vllmConfig:
+      v0: 0  # 使用vLLM v1
+      maxModelLen: 2048
+      dtype: "float16"
+      tensorParallelSize: 1
+      maxNumSeqs: 32
+      gpuMemoryUtilization: 0.85
+      extraArgs:
+        - "--quantization"
+        - "bitsandbytes"
+        - "--load-format"
+        - "bitsandbytes"
+    
+    # 存储配置
+    pvcStorage: "20Gi"
+    pvcAccessMode: ["ReadOnlyMany"]
+    storageClass: "standard"
+    
+  # 服务端口
+  containerPort: 8000
+  servicePort: 80
+
+# Router配置（可选）
+routerSpec:
+  enableRouter: false
+
+# 监控配置
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    path: /metrics/prometheus

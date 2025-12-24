@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen-vllm
+spec:
+  template:
+    spec:
+      containers:
+      - name: qwen-vllm
+        resources:
+          requests:
+            memory: "20Gi"
+            cpu: "6"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "32Gi"
+            cpu: "12"
+            nvidia.com/gpu: "1"

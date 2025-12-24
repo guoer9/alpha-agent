@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: qwen-model-pv
+  labels:
+    app: qwen-vllm
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: standard
+  hostPath:
+    path: /home/zch/qwen_vllm/models/qwen-news-classifier-merged
+    type: Directory

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen-vllm
+  labels:
+    app: qwen-vllm
+    version: v1
+    environment: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen-vllm
+  template:
+    metadata:
+      labels:
+        app: qwen-vllm
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics/prometheus"
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: qwen-vllm
+        image: docker.io/library/qwen-vllm:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        env:
+        - name: VLLM_MODEL
+          value: "/app/models/qwen-news-classifier-merged"
+        - name: VLLM_MAX_MODEL_LEN
+          value: "2048"
+        - name: VLLM_GPU_MEMORY_UTILIZATION
+          value: "0.85"
+        - name: VLLM_DTYPE
+          value: "float16"
+        - name: VLLM_QUANTIZATION
+          value: "bitsandbytes"
+        - name: VLLM_MAX_NUM_SEQS
+          value: "32"
+        resources:
+          requests:
+            memory: "16Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "32Gi"
+            cpu: "8"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: model-storage
+          mountPath: /app/models
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: model-storage
+        hostPath:
+          path: /home/zch/qwen_vllm/models/qwen-news-classifier-merged
+          type: Directory
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule

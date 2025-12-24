@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  qwen-vllm:
+    build: .
+    image: qwen-vllm:latest
+    container_name: qwen-vllm
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models/qwen-news-classifier-merged:/app/models/qwen-news-classifier-merged:ro
+      - ./config.py:/app/config.py:ro
+    environment:
+      - MODEL_PATH=/app/models/qwen-news-classifier-merged
+      - MAX_CONCURRENT_REQUESTS=3
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - vllm-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    restart: unless-stopped
+    networks:
+      - vllm-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    networks:
+      - vllm-network
+    depends_on:
+      - prometheus
+
+networks:
+  vllm-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

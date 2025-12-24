@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen-vllm-config
+  labels:
+    app: qwen-vllm
+data:
+  config.py: |
+    # 服务配置
+    HOST = "0.0.0.0"
+    PORT = 8000
+    
+    # 模型路径
+    MODEL_PATH = "/app/models/qwen-news-classifier-merged"
+    
+    # 并发控制
+    MAX_CONCURRENT_REQUESTS = 3
+    REQUEST_QUEUE_SIZE = 10
+    
+    # 速率限制
+    RATE_LIMIT_PER_MINUTE = 10
+    RATE_LIMIT_PER_HOUR = 100
+    
+    # 推理参数
+    MAX_TOKENS = 512
+    DEFAULT_TEMPERATURE = 0.3
+    TIMEOUT_SECONDS = 120
+    
+    # Gunicorn配置
+    WORKERS = 1
+    THREADS = 4
+    
+    # 日志配置
+    LOG_LEVEL = "info"

@@ -1,0 +1,90 @@
+# Qwen微调训练依赖（参考HuggingFace官方）
+
+# PyTorch（RTX 5090 Blackwell架构需要CUDA 12.8+）
+# 官方文档: https://pytorch.org/get-started/locally/
+# RTX 5090要求: PyTorch 2.5.0+ with CUDA 12.8
+torch>=2.5.0
+torchvision>=0.20.0
+torchaudio>=2.5.0
+
+# Transformers生态（HuggingFace官方推荐最新版本）
+# Transformers: 4.46.0+ (支持Qwen2.5)
+# TRL: 0.11.0+ (最新SFTTrainer)
+transformers>=4.46.0
+accelerate>=0.34.0
+peft>=0.13.0
+trl>=0.11.0
+
+# 数据处理
+datasets>=2.16.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Flash Attention 2（5090加速30%）
+flash-attn>=2.5.0
+
+# 量化（可选）
+bitsandbytes>=0.42.0
+
+# 监控和日志
+tensorboard>=2.15.0
+wandb>=0.16.0
+
+# 工具
+pyyaml>=6.0
+tqdm>=4.66.0
+scikit-learn>=1.3.0
+
+# 中文NLP
+jieba>=0.42.1
+snownlp>=0.12.3
+
+# 数据获取
+akshare>=1.12.0
+
+# ============================================================
+# 安装说明（HuggingFace官方推荐顺序）
+# ============================================================
+
+# Step 1: 安装PyTorch（CUDA 12.8+，RTX 5090 Blackwell架构专用）
+# ⚠️ 重要: RTX 5090需要CUDA 12.8及以上版本
+# PyTorch官方: https://pytorch.org/get-started/locally/
+#
+# 方案A: 使用PyTorch 2.5+ with CUDA 12.8 (推荐)
+#   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu128
+#
+# 方案B: 使用PyTorch Nightly (最新CUDA支持)
+#   pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+#
+# Step 2: 安装Transformers生态
+#
+#   pip install transformers==4.46.0 accelerate==0.34.0 peft==0.13.0 trl==0.11.0
+#
+# Step 3: 安装Flash Attention 2（可选但强烈推荐）
+#
+#   pip install flash-attn --no-build-isolation
+#
+# Step 4: 安装其他依赖
+#
+#   pip install datasets tensorboard wandb akshare jieba snownlp
+#
+# ============================================================
+# RTX 5090完整安装命令（CUDA 12.8+）
+# ============================================================
+#
+# 1. 安装PyTorch 2.5+ with CUDA 12.8
+#    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu128
+#
+# 2. 安装Transformers生态
+#    pip install transformers==4.46.0 accelerate==0.34.0 peft==0.13.0 trl==0.11.0
+#
+# 3. 安装Flash Attention 2（需要CUDA 12.8+编译）
+#    MAX_JOBS=4 pip install flash-attn --no-build-isolation
+#
+# 4. 安装其他依赖
+#    pip install datasets tensorboard wandb akshare jieba snownlp
+#
+# ⚠️ 注意事项:
+# - RTX 5090必须使用CUDA 12.8+
+# - Flash Attention需要重新编译（针对CUDA 12.8）
+# - 如果Flash Attention编译失败，可以不安装（性能略降）
