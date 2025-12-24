@@ -410,5 +410,8 @@ def main():
     
     app.run(host=args.host, port=args.port, threaded=True)
 
+# 模块导入时加载模型（供gunicorn使用）
+load_model_8bit(MODEL_PATH)
+
 if __name__ == "__main__":
     main()
