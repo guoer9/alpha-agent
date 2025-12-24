@@ -1,4 +1,9 @@
-# Qwen3-8B 金融新闻分类服务
+# Qwen新闻分类微调
+
+[![Hugging Face](https://img.shields.io/badge/🤗%20Model-qwen3--8b--news--classifier-yellow)](https://huggingface.co/guoer9/qwen3-8b-news-classifier)
+[![GitHub](https://img.shields.io/badge/GitHub-vllm--branch-blue)](https://github.com/guoer9/money-agent/tree/vllm)
+
+## Qwen3-8B 金融新闻分类服务
 
 基于Qwen3-8B的金融新闻分类模型部署服务，支持8-bit量化，适配RTX 3080 10GB显存。
 
